@@ -21,16 +21,21 @@ const CATEGORIES = [
 ];
 
 // Call Gemini AI
-async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<string> {
+async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       console.log(`🤖 Calling Gemini AI (attempt ${attempt + 1})...`);
       
+      // Add timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 50000); // 50s timeout per request
+      
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           contents: [{
             parts: [{ text: prompt }]
@@ -50,9 +55,19 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
         })
       });
 
+      clearTimeout(timeoutId);
+      
       if (!response.ok) {
         const errorText = await response.text();
         console.error('❌ Gemini API Error:', errorText);
+        
+        // Check for rate limiting
+        if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+        }
+        if (response.status === 403) {
+          throw new Error('API key invalid or quota exceeded. Check your Gemini API key.');
+        }
         throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
       }
 
@@ -69,7 +84,11 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
     } catch (error) {
       console.error(`❌ Attempt ${attempt + 1} failed:`, (error as Error).message);
       if (attempt === retries) throw error;
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Exponential backoff for retries
+      const delay = Math.min(5000 * Math.pow(2, attempt), 15000);
+      console.log(`⏳ Waiting ${delay}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
   throw new Error('All retries failed');
@@ -77,19 +96,18 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
 
 // Analyze single chunk
 async function analyzeSingleChunk(text: string, fileName: string, chunkNum: number, totalChunks: number, apiKey: string) {
-  const truncatedText = text.substring(0, 50000);
+  const truncatedText = text.substring(0, 40000); // Reduced from 50k to 40k for faster processing
   const chunkInfo = totalChunks > 1 ? ` (Chunk ${chunkNum}/${totalChunks})` : '';
   
-  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the newspaper text below and extract ALL relevant news items${chunkInfo}.
+  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract relevant news items${chunkInfo}.
 
-CRITICAL RULES:
-1. Return ONLY valid JSON, no markdown, no explanations
-2. Categorize into: polity, economy, international_relations, science_tech, environment, geography, culture, security, misc
-3. **IMPORTANT: Extract AT LEAST 10-15 news items PER CATEGORY if available in the text**
-4. Each item needs: title (concise, max 100 chars), points (2-4 key bullet points), references (array with page and excerpt), confidence (0-1)
-5. Include items with confidence >= 0.5 (lowered threshold for better coverage)
-6. Be thorough - don't miss any news items, even smaller ones
-7. If a category has no relevant content, return empty array []
+RULES:
+1. Return ONLY valid JSON, no markdown
+2. Categories: polity, economy, international_relations, science_tech, environment, geography, culture, security, misc
+3. Extract 8-12 news items PER CATEGORY if available
+4. Each item: title (max 80 chars), points (2-3 bullets), references [{page, excerpt}], confidence (0-1)
+5. Include items with confidence >= 0.5
+6. Empty array [] if no content for category
 
 TEXT TO ANALYZE (${truncatedText.length} chars)${chunkInfo}:
 ${truncatedText}
@@ -186,8 +204,8 @@ function mergeAnalysisResults(results: any[], fileName: string) {
 async function analyzeWithGemini(text: string, fileName: string, apiKey: string) {
   console.log(`📄 Total text length: ${text.length} characters`);
   
-  const maxChars = 100000;
-  const chunkSize = 50000;
+  const maxChars = 80000; // Reduced from 100k
+  const chunkSize = 40000; // Reduced from 50k
   
   if (text.length <= maxChars) {
     console.log(`✅ Processing single chunk (${text.length} chars)`);
@@ -197,7 +215,8 @@ async function analyzeWithGemini(text: string, fileName: string, apiKey: string)
     const numChunks = Math.ceil(text.length / chunkSize);
     const chunks: string[] = [];
     
-    for (let i = 0; i < numChunks && i < 3; i++) {
+    // Limit to 2 chunks to stay within timeout (was 3)
+    for (let i = 0; i < numChunks && i < 2; i++) {
       const start = i * chunkSize;
       const end = Math.min(start + chunkSize, text.length);
       chunks.push(text.substring(start, end));

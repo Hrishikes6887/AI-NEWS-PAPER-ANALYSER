@@ -5,8 +5,7 @@
   "framework": "vite",
   "functions": {
     "api/analyze.ts": {
-      "maxDuration": 300,
-      "memory": 1024
+      "maxDuration": 300
     }
   },
   "rewrites": [
