@@ -1,0 +1,18 @@
+{
+  "name": "upsc-analyzer-backend",
+  "version": "1.0.0",
+  "description": "Backend server for UPSC Current Affairs Analyzer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "node-fetch": "^2.7.0",
+    "pdf-parse": "^1.1.1"
+  }
+}
