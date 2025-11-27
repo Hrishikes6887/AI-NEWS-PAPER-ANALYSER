@@ -1,5 +1,4 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
@@ -15,14 +14,5 @@
       "source": "/api/:path*",
       "destination": "/api/:path*"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/analyze",
-      "dest": "/api/analyze.ts"
-    }
-  ],
-  "env": {
-    "VITE_GEMINI_API_KEY": "@vite_gemini_api_key"
-  }
+  ]
 }
