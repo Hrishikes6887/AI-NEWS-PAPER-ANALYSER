@@ -59,14 +59,22 @@ async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<
       
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Gemini API Error:', errorText);
+        console.error('❌ Gemini API Error Response:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorText,
+          apiKeyPrefix: apiKey.substring(0, 15) + '...'
+        });
         
         // Check for rate limiting
         if (response.status === 429) {
-          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+          throw new Error('Rate limit exceeded. Your API key hit the free tier limit (15 requests/minute). Wait 60 seconds or upgrade to paid tier.');
         }
         if (response.status === 403) {
-          throw new Error('API key invalid or quota exceeded. Check your Gemini API key.');
+          throw new Error('API key invalid or quota exceeded. Your key may be disabled or out of quota. Check https://aistudio.google.com/apikey');
+        }
+        if (response.status === 400) {
+          throw new Error(`Bad request to Gemini API: ${errorText}`);
         }
         throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
       }
@@ -389,9 +397,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         // Get API key from environment
         const apiKey = process.env.GEMINI_API_KEY;
+        console.log(`🔑 API Key status: ${apiKey ? 'Found (length: ' + apiKey.length + ')' : 'NOT FOUND'}`);
+        
         if (!apiKey) {
           throw new Error('GEMINI_API_KEY not configured. Please set it in Vercel Environment Variables.');
         }
+
+        console.log(`🚀 Starting Gemini analysis...`);
 
         const analysisResult = await analyzeWithGemini(text, fileName, apiKey);
         console.log(`✅ Analysis complete!`);
