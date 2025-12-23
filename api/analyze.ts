@@ -245,7 +245,7 @@ Remember: Focus on exam-relevant substance with verifiable data. Filter politica
       title: 'Error: Could not analyze with Gemini AI',
       points: [
         `Error: ${(error as Error).message}`,
-        'Please check your VITE_GEMINI_API_KEY environment variable'
+        'Please check your GEMINI_API_KEY environment variable in Vercel'
       ],
       references: [{ page: 1, excerpt: 'Error occurred during analysis' }],
       confidence: 0.5
@@ -387,10 +387,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('No text extracted from document');
         }
 
-        // Check for API key with fallback (GEMINI_API_KEY for serverless, VITE_GEMINI_API_KEY for local)
-        const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+        // Get API key from environment
+        const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
-          throw new Error('API key not configured. Please set GEMINI_API_KEY or VITE_GEMINI_API_KEY environment variable in Vercel');
+          throw new Error('GEMINI_API_KEY not configured. Please set it in Vercel Environment Variables.');
         }
 
         const analysisResult = await analyzeWithGemini(text, fileName, apiKey);
