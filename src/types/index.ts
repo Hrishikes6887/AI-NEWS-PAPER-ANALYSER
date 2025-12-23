@@ -15,10 +15,16 @@ export interface NewsItem {
   title: string;
   points: string[];
   references: {
+    newspaper?: string;
+    date?: string;
+    headline?: string;
     page: number;
     excerpt: string;
   }[];
   confidence: number;
+  hasNumbers?: boolean;
+  numericHighlights?: string[];
+  priorityScore?: number;
 }
 
 export interface AnalysisData {

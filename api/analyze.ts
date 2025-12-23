@@ -94,29 +94,118 @@ async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<
   throw new Error('All retries failed');
 }
 
+// Detect and extract numerical values from text
+function detectNumericalData(item: any): { hasNumbers: boolean; numericHighlights: string[] } {
+  const numericPatterns = [
+    /₹\s*[\d,]+(\s*(crore|lakh|billion|million|thousand))?/gi,
+    /\$\s*[\d,]+(\s*(billion|million|thousand))?/gi,
+    /\d+%/g,
+    /\d+\s*(MW|GW|km|hectares|tons|tonnes|metric tons)/gi,
+    /(20[2-9]\d|203\d)/g, // Years 2020-2039
+    /\d+\s*(targets?|goals?)/gi
+  ];
+
+  const allText = `${item.title} ${item.points.join(' ')}`;
+  const highlights: string[] = [];
+  let hasNumbers = false;
+
+  numericPatterns.forEach(pattern => {
+    const matches = allText.match(pattern);
+    if (matches && matches.length > 0) {
+      hasNumbers = true;
+      matches.forEach(match => {
+        if (!highlights.includes(match)) {
+          highlights.push(match);
+        }
+      });
+    }
+  });
+
+  return { hasNumbers, numericHighlights: highlights.slice(0, 5) }; // Max 5 highlights
+}
+
+// Calculate priority score based on confidence and numerical data
+function calculatePriorityScore(item: any): number {
+  let score = item.confidence || 0.5;
+  
+  // Boost for numerical data (up to +0.2)
+  if (item.hasNumbers && item.numericHighlights && item.numericHighlights.length > 0) {
+    const boost = Math.min(0.2, item.numericHighlights.length * 0.05);
+    score += boost;
+  }
+  
+  // Cap at 1.0
+  return Math.min(score, 1.0);
+}
+
+// Process items to add numerical detection and priority
+function processNewsItems(items: any[]): any[] {
+  return items.map(item => {
+    const { hasNumbers, numericHighlights } = detectNumericalData(item);
+    const processedItem = {
+      ...item,
+      hasNumbers,
+      numericHighlights,
+      priorityScore: 0
+    };
+    processedItem.priorityScore = calculatePriorityScore(processedItem);
+    return processedItem;
+  });
+}
+
 // Analyze single chunk
 async function analyzeSingleChunk(text: string, fileName: string, chunkNum: number, totalChunks: number, apiKey: string) {
   const truncatedText = text.substring(0, 40000); // Reduced from 50k to 40k for faster processing
   const chunkInfo = totalChunks > 1 ? ` (Chunk ${chunkNum}/${totalChunks})` : '';
   
-  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract relevant news items${chunkInfo}.
+  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract exam-relevant news items${chunkInfo}.
 
-RULES:
-1. Return ONLY valid JSON, no markdown
-2. Categories: polity, economy, international_relations, science_tech, environment, geography, culture, security, misc
-3. Extract 8-12 news items PER CATEGORY if available
-4. Each item: title (max 80 chars), points (2-3 bullets), references [{page, excerpt}], confidence (0-1)
-5. Include items with confidence >= 0.5
-6. Empty array [] if no content for category
+CRITICAL FILTERING RULES:
+1. POLITICAL NOISE FILTER:
+   - EXCLUDE routine political party statements, election rhetoric, party criticism
+   - INCLUDE ONLY if news involves: constitutional amendments, laws, governance policies, court rulings, institutional reforms
+   - Focus on substance (what changed/decided) NOT politics (who said what)
+   - Political party names acceptable only for legislative/policy context
+
+2. NUMERICAL VALUE PRIORITY:
+   - Prioritize news with concrete data: budget figures (₹ crore/lakh/billion), targets (MW, km, tons, %), timelines (2027, 2030)
+   - Include numerical values EXPLICITLY in the points
+   - Mark items with meaningful numbers for higher priority
+
+3. ENHANCED REFERENCES:
+   - Extract: newspaper name, date (DD-MM-YYYY), exact headline, page number, 1-2 line excerpt
+   - References must be verifiable and classroom-ready
+
+OUTPUT FORMAT:
+- Return ONLY valid JSON, no markdown
+- Categories: polity, economy, international_relations, science_tech, environment, geography, culture, security, misc
+- Extract 8-12 news items PER CATEGORY if available
+- Include items with confidence >= 0.5
+- Empty array [] if no content for category
 
 TEXT TO ANALYZE (${truncatedText.length} chars)${chunkInfo}:
 ${truncatedText}
 
-Return JSON in this exact format:
+Return JSON in this EXACT format:
 {
   "source_file": "${fileName}",
   "categories": {
-    "polity": [{"title": "Brief title", "points": ["Point 1", "Point 2"], "references": [{"page": 1, "excerpt": "First 80 chars..."}], "confidence": 0.75}],
+    "polity": [
+      {
+        "title": "Brief title (max 80 chars)",
+        "points": ["Point with numbers if available: ₹500 crore allocated", "Point 2"],
+        "references": [
+          {
+            "newspaper": "The Hindu",
+            "date": "23-12-2025",
+            "headline": "Exact headline as printed",
+            "page": 1,
+            "excerpt": "First 100 chars from article..."
+          }
+        ],
+        "confidence": 0.85
+      }
+    ],
     "economy": [],
     "international_relations": [],
     "science_tech": [],
@@ -128,7 +217,7 @@ Return JSON in this exact format:
   }
 }
 
-Remember: Extract ALL relevant news items thoroughly. Aim for 10-15 items per category where possible.`;
+Remember: Focus on exam-relevant substance with verifiable data. Filter political noise. Prioritize numerical facts.`;
 
   try {
     const response = await callGemini(prompt, apiKey);
@@ -137,8 +226,14 @@ Remember: Extract ALL relevant news items thoroughly. Aim for 10-15 items per ca
 
     const parsed = JSON.parse(jsonMatch[0]);
     
+    // Ensure all categories exist and process items
     CATEGORIES.forEach(cat => {
-      if (!parsed.categories[cat]) parsed.categories[cat] = [];
+      if (!parsed.categories[cat]) {
+        parsed.categories[cat] = [];
+      } else {
+        // Process each item to detect numbers and calculate priority
+        parsed.categories[cat] = processNewsItems(parsed.categories[cat]);
+      }
     });
 
     return parsed;
@@ -177,7 +272,7 @@ function mergeAnalysisResults(results: any[], fileName: string) {
     }
   });
   
-  // Remove duplicates
+  // Remove duplicates and sort by priority
   Object.keys(merged.categories).forEach(cat => {
     const items = merged.categories[cat];
     const unique: any[] = [];
@@ -190,6 +285,9 @@ function mergeAnalysisResults(results: any[], fileName: string) {
         unique.push(item);
       }
     });
+    
+    // Sort by priority score (highest first)
+    unique.sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
     
     merged.categories[cat] = unique;
   });

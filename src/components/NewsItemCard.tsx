@@ -119,7 +119,30 @@ export default function NewsItemCard({ item, category, itemIndex, isBookmarked }
               <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
                 Confidence: {(avgConfidence * 100).toFixed(0)}%
               </span>
+              {item.priorityScore && item.priorityScore > avgConfidence && (
+                <span className="px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800">
+                  Priority: {(item.priorityScore * 100).toFixed(0)}%
+                </span>
+              )}
+              {item.hasNumbers && (
+                <span className="px-2 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
+                  📊 Data-rich
+                </span>
+              )}
             </div>
+            
+            {item.numericHighlights && item.numericHighlights.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {item.numericHighlights.map((highlight, idx) => (
+                  <span
+                    key={idx}
+                    className="inline-flex items-center px-2 py-1 text-xs font-mono font-semibold bg-yellow-50 text-yellow-900 border border-yellow-200 rounded"
+                  >
+                    {highlight}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <button
@@ -197,18 +220,36 @@ export default function NewsItemCard({ item, category, itemIndex, isBookmarked }
             </div>
 
             {item.references && item.references.length > 0 && (
-              <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-                <h4 className="text-sm font-semibold text-gray-700 mb-2">References</h4>
-                <div className="space-y-2">
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center">
+                  <FileText className="w-4 h-4 mr-2" />
+                  References
+                </h4>
+                <div className="space-y-3">
                   {item.references.map((ref, refIndex) => (
-                    <button
+                    <div
                       key={refIndex}
-                      onClick={() => handleJumpToPDF(ref.page)}
-                      className="block w-full text-left text-sm text-gray-600 hover:text-blue-600 hover:bg-white px-3 py-2 rounded transition-colors"
+                      className="bg-white p-3 rounded border border-gray-200 hover:border-blue-300 transition-colors"
                     >
-                      <span className="font-medium">Page {ref.page}:</span>{' '}
-                      <span className="italic">&quot;{ref.excerpt}&quot;</span>
-                    </button>
+                      {ref.newspaper && (
+                        <div className="text-sm font-semibold text-gray-900 mb-1">
+                          📰 {ref.newspaper}
+                          {ref.date && <span className="text-gray-500 font-normal ml-2">• {ref.date}</span>}
+                        </div>
+                      )}
+                      {ref.headline && (
+                        <div className="text-sm font-medium text-blue-700 mb-2">
+                          &quot;{ref.headline}&quot;
+                        </div>
+                      )}
+                      <button
+                        onClick={() => handleJumpToPDF(ref.page)}
+                        className="w-full text-left text-sm text-gray-600 hover:text-blue-600 transition-colors"
+                      >
+                        <span className="font-medium">Page {ref.page}:</span>{' '}
+                        <span className="italic">&quot;{ref.excerpt}&quot;</span>
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
