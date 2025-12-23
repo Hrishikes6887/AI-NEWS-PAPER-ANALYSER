@@ -387,9 +387,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('No text extracted from document');
         }
 
-        const apiKey = process.env.VITE_GEMINI_API_KEY;
+        // Check for API key with fallback (GEMINI_API_KEY for serverless, VITE_GEMINI_API_KEY for local)
+        const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
         if (!apiKey) {
-          throw new Error('VITE_GEMINI_API_KEY not configured');
+          throw new Error('API key not configured. Please set GEMINI_API_KEY or VITE_GEMINI_API_KEY environment variable in Vercel');
         }
 
         const analysisResult = await analyzeWithGemini(text, fileName, apiKey);
