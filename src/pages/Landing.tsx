@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Sparkles, Brain, FileCheck, ArrowRight } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Sparkles, Brain, FileCheck, ArrowRight, Clock } from 'lucide-react';
 import FileUpload from '../components/FileUpload';
 import { useAnalysisStore } from '../store/analysisStore';
 import type { UploadedFile } from '../types';
@@ -12,8 +12,17 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
   const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
   const { setAnalysis, setLoading: setStoreLoading, setError: setStoreError } = useAnalysisStore();
+
+  // Cooldown timer
+  useEffect(() => {
+    if (cooldownSeconds > 0) {
+      const timer = setTimeout(() => setCooldownSeconds(cooldownSeconds - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [cooldownSeconds]);
 
   const handleFileSelect = (file: File) => {
     setUploadedFile({
@@ -54,9 +63,16 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
       console.log('Response status:', response.status);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Response error:', errorText);
-        throw new Error(`Analysis failed (${response.status}): ${errorText}`);
+        const errorData = await response.json().catch(() => null);
+        console.error('Response error:', errorData);
+        
+        // Handle cooldown/rate limit errors with retry timer
+        if (response.status === 429 && errorData?.retryAfter) {
+          setCooldownSeconds(errorData.retryAfter);
+          throw new Error(errorData.error || 'Please wait before uploading another document');
+        }
+        
+        throw new Error(errorData?.error || `Analysis failed (${response.status})`);
       }
 
       const result = await response.json();
@@ -65,6 +81,9 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
       if (result.success && result.data) {
         setAnalysis(result.data, JSON.stringify(result.data, null, 2));
         console.log('Analysis stored successfully');
+        
+        // Start 5-second cooldown for next upload
+        setCooldownSeconds(5);
 
         onNavigateToAnalysis();
       } else {
@@ -104,14 +123,24 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
             />
 
             {uploadedFile && !isLoading && !error && (
-              <div className="mt-8 flex justify-center">
+              <div className="mt-8 flex flex-col items-center space-y-4">
                 <button
                   onClick={handleProceed}
-                  className="inline-flex items-center px-8 py-4 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-lg hover:shadow-xl space-x-2"
+                  disabled={cooldownSeconds > 0}
+                  className="inline-flex items-center px-8 py-4 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-lg hover:shadow-xl space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
                 >
                   <span>Analyze Document</span>
                   <ArrowRight className="w-5 h-5" />
                 </button>
+                
+                {cooldownSeconds > 0 && (
+                  <div className="flex items-center space-x-2 text-amber-600 bg-amber-50 px-4 py-2 rounded-lg">
+                    <Clock className="w-4 h-4" />
+                    <span className="text-sm font-medium">
+                      Wait {cooldownSeconds}s before next upload (prevents rate limit)
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>
