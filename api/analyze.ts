@@ -1,4 +1,5 @@
 // Vercel Serverless Function for PDF/DOCX Analysis with Gemini AI
+// OPTIMIZED FOR GEMINI FREE TIER (15 requests/minute)
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import multiparty from 'multiparty';
 import fs from 'fs';
@@ -20,8 +21,11 @@ const CATEGORIES = [
   'misc'
 ];
 
-// Call Gemini AI
-async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<string> {
+// 🔒 GLOBAL LOCK: Prevent concurrent analysis (free tier constraint)
+let isProcessing = false;
+
+// Call Gemini AI (NO RETRY ON RATE LIMITS)
+async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -66,16 +70,29 @@ async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<
           apiKeyPrefix: apiKey.substring(0, 15) + '...'
         });
         
-        // Check for rate limiting
+        // 🚨 CRITICAL: Don't retry on rate limit - throw immediately
         if (response.status === 429) {
-          throw new Error('Rate limit exceeded. Your API key hit the free tier limit (15 requests/minute). Wait 60 seconds or upgrade to paid tier.');
+          const error = new Error('RATE_LIMIT_HIT') as any;
+          error.statusCode = 429;
+          error.userMessage = 'Rate limit reached (15 requests/minute on free tier). Please wait 1-2 minutes before trying again.';
+          throw error;
         }
+        
         if (response.status === 403) {
-          throw new Error('API key invalid or quota exceeded. Your key may be disabled or out of quota. Check https://aistudio.google.com/apikey');
+          const error = new Error('API_KEY_INVALID') as any;
+          error.statusCode = 403;
+          error.userMessage = 'API key invalid or quota exceeded. Check your Gemini API key at https://aistudio.google.com/apikey';
+          throw error;
         }
+        
         if (response.status === 400) {
-          throw new Error(`Bad request to Gemini API: ${errorText}`);
+          const error = new Error('BAD_REQUEST') as any;
+          error.statusCode = 400;
+          error.userMessage = `Invalid request to Gemini API. The document may be too complex or contain unsupported content.`;
+          throw error;
         }
+        
+        // Other errors - throw and allow retry
         throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
       }
 
@@ -89,12 +106,19 @@ async function callGemini(prompt: string, apiKey: string, retries = 3): Promise<
       console.log(`✅ Gemini response received (${text.length} chars)`);
       return text;
 
-    } catch (error) {
-      console.error(`❌ Attempt ${attempt + 1} failed:`, (error as Error).message);
+    } catch (error: any) {
+      console.error(`❌ Attempt ${attempt + 1} failed:`, error.message);
+      
+      // 🚨 Don't retry on rate limits, API key errors, or bad requests
+      if (error.statusCode === 429 || error.statusCode === 403 || error.statusCode === 400) {
+        throw error;
+      }
+      
+      // Retry only on network/timeout errors
       if (attempt === retries) throw error;
       
-      // Exponential backoff for retries
-      const delay = Math.min(5000 * Math.pow(2, attempt), 15000);
+      // Exponential backoff for network retries
+      const delay = Math.min(3000 * Math.pow(2, attempt), 10000);
       console.log(`⏳ Waiting ${delay}ms before retry...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
@@ -161,12 +185,15 @@ function processNewsItems(items: any[]): any[] {
   });
 }
 
-// Analyze single chunk
-async function analyzeSingleChunk(text: string, fileName: string, chunkNum: number, totalChunks: number, apiKey: string) {
-  const truncatedText = text.substring(0, 40000); // Reduced from 50k to 40k for faster processing
-  const chunkInfo = totalChunks > 1 ? ` (Chunk ${chunkNum}/${totalChunks})` : '';
+// Analyze single chunk (OPTIMIZED FOR FREE TIER - NO MULTI-CHUNK)
+async function analyzeSingleChunk(text: string, fileName: string, apiKey: string) {
+  // 🎯 FREE TIER: Process only first 60k chars per document
+  const truncatedText = text.substring(0, 60000);
+  const wastruncated = text.length > 60000;
   
-  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract exam-relevant news items${chunkInfo}.
+  console.log(`📄 Processing: ${truncatedText.length} chars${wastruncated ? ' (truncated from ' + text.length + ')' : ''}`);
+  
+  const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract exam-relevant news items.
 
 CRITICAL FILTERING RULES:
 1. POLITICAL NOISE FILTER:
@@ -191,7 +218,7 @@ OUTPUT FORMAT:
 - Include items with confidence >= 0.5
 - Empty array [] if no content for category
 
-TEXT TO ANALYZE (${truncatedText.length} chars)${chunkInfo}:
+TEXT TO ANALYZE (${truncatedText.length} chars):
 ${truncatedText}
 
 Return JSON in this EXACT format:
@@ -245,100 +272,47 @@ Remember: Focus on exam-relevant substance with verifiable data. Filter politica
     });
 
     return parsed;
-  } catch (error) {
+  } catch (error: any) {
+    // Re-throw structured errors from callGemini
+    if (error.statusCode) {
+      throw error;
+    }
+    
+    // Handle parsing/other errors
     const fallback: any = { source_file: fileName, categories: {} };
     CATEGORIES.forEach(cat => fallback.categories[cat] = []);
     
     fallback.categories.polity = [{
       title: 'Error: Could not analyze with Gemini AI',
       points: [
-        `Error: ${(error as Error).message}`,
+        `Error: ${error.message}`,
         'Please check your GEMINI_API_KEY environment variable in Vercel'
       ],
       references: [{ page: 1, excerpt: 'Error occurred during analysis' }],
-      confidence: 0.5
+      confidence: 0.5,
+      hasNumbers: false,
+      numericHighlights: [],
+      priorityScore: 0.5
     }];
     
     return fallback;
   }
 }
 
-// Merge analysis results
-function mergeAnalysisResults(results: any[], fileName: string) {
-  console.log(`🔗 Merging ${results.length} chunk results...`);
-  
-  const merged: any = { source_file: fileName, categories: {} };
-  CATEGORIES.forEach(cat => merged.categories[cat] = []);
-  
-  results.forEach(result => {
-    if (result?.categories) {
-      Object.keys(result.categories).forEach(cat => {
-        if (merged.categories[cat] && result.categories[cat]) {
-          merged.categories[cat].push(...result.categories[cat]);
-        }
-      });
-    }
-  });
-  
-  // Remove duplicates and sort by priority
-  Object.keys(merged.categories).forEach(cat => {
-    const items = merged.categories[cat];
-    const unique: any[] = [];
-    const seenTitles = new Set<string>();
-    
-    items.forEach((item: any) => {
-      const normalizedTitle = item.title.toLowerCase().substring(0, 50);
-      if (!seenTitles.has(normalizedTitle)) {
-        seenTitles.add(normalizedTitle);
-        unique.push(item);
-      }
-    });
-    
-    // Sort by priority score (highest first)
-    unique.sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
-    
-    merged.categories[cat] = unique;
-  });
-  
-  const totalItems = Object.values(merged.categories).reduce((sum: number, items: any) => sum + items.length, 0);
-  console.log(`✅ Merged result: ${totalItems} unique items`);
-  
-  return merged;
-}
-
-// Main analysis with chunking
+// Main analysis (FREE TIER: SINGLE CHUNK ONLY - NO SPLITTING)
 async function analyzeWithGemini(text: string, fileName: string, apiKey: string) {
   console.log(`📄 Total text length: ${text.length} characters`);
   
-  const maxChars = 80000; // Reduced from 100k
-  const chunkSize = 40000; // Reduced from 50k
+  // 🎯 FREE TIER OPTIMIZATION: Process only one chunk (60k max)
+  // This ensures ONE Gemini API call per document
+  const maxChars = 60000;
   
-  if (text.length <= maxChars) {
-    console.log(`✅ Processing single chunk (${text.length} chars)`);
-    return await analyzeSingleChunk(text, fileName, 1, 1, apiKey);
-  } else {
-    console.log(`📊 Large document detected, splitting into chunks...`);
-    const numChunks = Math.ceil(text.length / chunkSize);
-    const chunks: string[] = [];
-    
-    // Limit to 2 chunks to stay within timeout (was 3)
-    for (let i = 0; i < numChunks && i < 2; i++) {
-      const start = i * chunkSize;
-      const end = Math.min(start + chunkSize, text.length);
-      chunks.push(text.substring(start, end));
-    }
-    
-    console.log(`🔄 Processing ${chunks.length} chunks...`);
-    
-    const results = [];
-    for (let i = 0; i < chunks.length; i++) {
-      console.log(`  📑 Processing chunk ${i + 1}/${chunks.length}...`);
-      const result = await analyzeSingleChunk(chunks[i], fileName, i + 1, chunks.length, apiKey);
-      results.push(result);
-    }
-    
-    return mergeAnalysisResults(results, fileName);
+  if (text.length > maxChars) {
+    console.log(`⚠️  Large document detected (${text.length} chars). Processing first ${maxChars} chars only (free tier limit).`);
   }
+  
+  console.log(`✅ Processing document with single Gemini API call...`);
+  return await analyzeSingleChunk(text, fileName, apiKey);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -354,6 +328,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
+
+  // 🔒 GLOBAL LOCK: Prevent concurrent processing (free tier constraint)
+  if (isProcessing) {
+    console.log('⚠️  Another analysis is already in progress. Rejecting request.');
+    return res.status(429).json({
+      success: false,
+      error: 'Another analysis is in progress. Please wait 60 seconds and try again.',
+      code: 'CONCURRENT_REQUEST_BLOCKED'
+    });
+  }
+
+  // Acquire lock
+  isProcessing = true;
+  console.log('🔓 Lock acquired - starting analysis...');
 
   return new Promise<void>((resolve) => {
     const form = new multiparty.Form();
@@ -403,7 +391,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('GEMINI_API_KEY not configured. Please set it in Vercel Environment Variables.');
         }
 
-        console.log(`🚀 Starting Gemini analysis...`);
+        console.log(`🚀 Starting Gemini analysis (FREE TIER - single API call)...`);
 
         const analysisResult = await analyzeWithGemini(text, fileName, apiKey);
         console.log(`✅ Analysis complete!`);
@@ -413,13 +401,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           data: analysisResult
         });
 
-      } catch (error) {
-        console.error('❌ Analysis error:', (error as Error).message);
+      } catch (error: any) {
+        console.error('❌ Analysis error:', error.message);
+        
+        // 🎯 GRACEFUL ERROR HANDLING: Return user-friendly structured responses
+        if (error.statusCode === 429) {
+          return res.status(429).json({
+            success: false,
+            error: error.userMessage || 'Rate limit reached. Please wait 1-2 minutes before trying again.',
+            code: 'RATE_LIMIT_HIT',
+            retryAfter: 120 // seconds
+          });
+        }
+        
+        if (error.statusCode === 403) {
+          return res.status(403).json({
+            success: false,
+            error: error.userMessage || 'API key invalid. Check your Gemini API key configuration.',
+            code: 'API_KEY_INVALID'
+          });
+        }
+        
+        if (error.statusCode === 400) {
+          return res.status(400).json({
+            success: false,
+            error: error.userMessage || 'Invalid request. The document may be too complex.',
+            code: 'BAD_REQUEST'
+          });
+        }
+        
+        // Generic error (don't expose stack traces)
         res.status(500).json({
           success: false,
-          error: (error as Error).message
+          error: error.message || 'An unexpected error occurred during analysis.',
+          code: 'INTERNAL_ERROR'
         });
+        
       } finally {
+        // 🔒 ALWAYS release lock (critical!)
+        isProcessing = false;
+        console.log('🔓 Lock released');
+        
         if (tempFilePath && fs.existsSync(tempFilePath)) {
           fs.unlinkSync(tempFilePath);
           console.log('🗑️  Temp file cleaned up');
