@@ -23,6 +23,11 @@ const CATEGORIES = [
 
 // 🔒 GLOBAL LOCK: Prevent concurrent analysis (free tier constraint)
 let isProcessing = false;
+let lastRequestTime = 0;
+
+// Minimum delay between requests (milliseconds) - prevents rate limit
+// Free tier: 15 req/min = 4 seconds per request minimum
+const MIN_REQUEST_INTERVAL = 5000; // 5 seconds safety margin
 
 // Call Gemini AI (NO RETRY ON RATE LIMITS)
 async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<string> {
@@ -339,8 +344,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // Acquire lock
+  // ⏱️ COOLDOWN: Enforce minimum delay between requests to prevent rate limiting
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  
+  if (lastRequestTime > 0 && timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    const waitTime = Math.ceil((MIN_REQUEST_INTERVAL - timeSinceLastRequest) / 1000);
+    console.log(`⏳ Cooldown active. Last request was ${Math.floor(timeSinceLastRequest / 1000)}s ago.`);
+    return res.status(429).json({
+      success: false,
+      error: `Please wait ${waitTime} seconds before uploading another document. This prevents rate limit errors.`,
+      code: 'COOLDOWN_ACTIVE',
+      retryAfter: waitTime
+    });
+  }
+
+  // Acquire lock and update timestamp
   isProcessing = true;
+  lastRequestTime = now;
   console.log('🔓 Lock acquired - starting analysis...');
 
   return new Promise<void>((resolve) => {
