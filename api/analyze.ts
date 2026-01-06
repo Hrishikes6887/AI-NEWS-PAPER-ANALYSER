@@ -39,7 +39,7 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
       
       // Add timeout to prevent hanging
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 50000); // 50s timeout per request
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for large newspapers
       
       const response = await fetch(url, {
         method: 'POST',
@@ -53,7 +53,7 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
             temperature: 0.7,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 16384,
+            maxOutputTokens: 8192, // Gemini 2.0 Flash supports 8192 output tokens
           },
           safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -192,11 +192,13 @@ function processNewsItems(items: any[]): any[] {
 
 // Analyze single chunk (OPTIMIZED FOR FREE TIER - NO MULTI-CHUNK)
 async function analyzeSingleChunk(text: string, fileName: string, apiKey: string) {
-  // 🎯 FREE TIER: Process only first 60k chars per document
-  const truncatedText = text.substring(0, 60000);
-  const wastruncated = text.length > 60000;
+  // 🎯 Gemini 2.0 Flash: Up to 1M tokens (~750k chars)
+  // Free tier limit: Use up to 500k chars for large newspapers
+  const MAX_CHARS = 500000; // 500k chars = ~125k tokens (well within 1M limit)
+  const truncatedText = text.substring(0, MAX_CHARS);
+  const wasTruncated = text.length > MAX_CHARS;
   
-  console.log(`📄 Processing: ${truncatedText.length} chars${wastruncated ? ' (truncated from ' + text.length + ')' : ''}`);
+  console.log(`📄 Processing: ${truncatedText.length} chars${wasTruncated ? ' (truncated from ' + text.length + ')' : ''}`);
   
   const prompt = `You are an expert UPSC Current Affairs Analyst. Analyze the text and extract exam-relevant news items.
 
@@ -308,12 +310,12 @@ Remember: Focus on exam-relevant substance with verifiable data. Filter politica
 async function analyzeWithGemini(text: string, fileName: string, apiKey: string) {
   console.log(`📄 Total text length: ${text.length} characters`);
   
-  // 🎯 FREE TIER OPTIMIZATION: Process only one chunk (60k max)
-  // This ensures ONE Gemini API call per document
-  const maxChars = 60000;
+  // 🎯 Gemini 2.0 Flash supports up to 1M tokens (~750k chars)
+  // Free tier: Process up to 500k chars per document
+  const maxChars = 500000;
   
   if (text.length > maxChars) {
-    console.log(`⚠️  Large document detected (${text.length} chars). Processing first ${maxChars} chars only (free tier limit).`);
+    console.log(`⚠️  Large document detected (${text.length} chars). Processing first ${maxChars} chars only.`);
   }
   
   console.log(`✅ Processing document with single Gemini API call...`);
