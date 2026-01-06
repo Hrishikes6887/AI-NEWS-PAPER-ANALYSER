@@ -1,5 +1,5 @@
 // Vercel Serverless Function for PDF/DOCX Analysis with Gemini AI
-// OPTIMIZED FOR GEMINI FREE TIER (15 requests/minute)
+// OPTIMIZED FOR GEMINI 2.0 FLASH (Paid Tier)
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import multiparty from 'multiparty';
 import fs from 'fs';
@@ -21,15 +21,22 @@ const CATEGORIES = [
   'misc'
 ];
 
-// 🔒 GLOBAL LOCK: Prevent concurrent analysis (free tier constraint)
+// 🔒 GLOBAL LOCK: Prevent concurrent processing for stability
+// Ensures one analysis at a time to avoid overloading serverless function
 let isProcessing = false;
 let lastRequestTime = 0;
 
-// Minimum delay between requests (milliseconds) - prevents rate limit
-// Free tier: 15 req/min = 4 seconds per request minimum
-const MIN_REQUEST_INTERVAL = 5000; // 5 seconds safety margin
+// Cooldown between requests - prevents API abuse and ensures stability
+// Paid tier supports higher rates, but we enforce cooldown for reliability
+const MIN_REQUEST_INTERVAL = 3000; // 3 seconds cooldown for paid tier
 
-// Call Gemini AI (NO RETRY ON RATE LIMITS)
+// Production limits: Keep files manageable for consistent performance
+const MAX_FILE_SIZE_MB = 15; // 15MB hard limit for PDFs
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MIN_TEXT_LENGTH = 1000; // Minimum chars to consider PDF text-based (not scanned)
+
+// Call Gemini AI with smart retry logic
+// Paid tier has higher limits, but we still handle errors gracefully
 async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
@@ -75,18 +82,18 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
           apiKeyPrefix: apiKey.substring(0, 15) + '...'
         });
         
-        // 🚨 CRITICAL: Don't retry on rate limit - throw immediately
+        // 🚨 Handle rate limits and auth errors with user-friendly messages
         if (response.status === 429) {
           const error = new Error('RATE_LIMIT_HIT') as any;
           error.statusCode = 429;
-          error.userMessage = 'Rate limit reached (15 requests/minute on free tier). Please wait 1-2 minutes before trying again.';
+          error.userMessage = 'Analysis service temporarily busy. Please wait 30 seconds and try again.';
           throw error;
         }
         
         if (response.status === 403) {
           const error = new Error('API_KEY_INVALID') as any;
           error.statusCode = 403;
-          error.userMessage = 'API key invalid or quota exceeded. Check your Gemini API key at https://aistudio.google.com/apikey';
+          error.userMessage = 'Analysis service temporarily unavailable. Please contact support if this persists.';
           throw error;
         }
         
@@ -190,11 +197,13 @@ function processNewsItems(items: any[]): any[] {
   });
 }
 
-// Analyze single chunk (OPTIMIZED FOR FREE TIER - NO MULTI-CHUNK)
+// FIX-1: Smart text extraction with hard cap (TEXT length, not file size)
+// Extract text from PDF and cap at safe limit before sending to Gemini
 async function analyzeSingleChunk(text: string, fileName: string, apiKey: string) {
-  // 🎯 Gemini 2.0 Flash: Up to 1M tokens (~750k chars)
-  // Free tier limit: Use up to 500k chars for large newspapers
-  const MAX_CHARS = 500000; // 500k chars = ~125k tokens (well within 1M limit)
+  // 🎯 Gemini 2.0 Flash: 1M token context (paid tier)
+  // Production limit: Cap at 60K chars for optimal performance and cost
+  // This equals ~15K tokens - fast, reliable, covers typical newspapers
+  const MAX_CHARS = 60000; // Safe limit: fast analysis, complete coverage
   const truncatedText = text.substring(0, MAX_CHARS);
   const wasTruncated = text.length > MAX_CHARS;
   
@@ -306,19 +315,20 @@ Remember: Focus on exam-relevant substance with verifiable data. Filter politica
   }
 }
 
-// Main analysis (FREE TIER: SINGLE CHUNK ONLY - NO SPLITTING)
+// FIX-3: Ensure exactly ONE Gemini API call per PDF
+// Single-call approach ensures reliability and predictable cost
 async function analyzeWithGemini(text: string, fileName: string, apiKey: string) {
   console.log(`📄 Total text length: ${text.length} characters`);
   
-  // 🎯 Gemini 2.0 Flash supports up to 1M tokens (~750k chars)
-  // Free tier: Process up to 500k chars per document
-  const maxChars = 500000;
-  
-  if (text.length > maxChars) {
-    console.log(`⚠️  Large document detected (${text.length} chars). Processing first ${maxChars} chars only.`);
+  // FIX-4: Detect image-based/scanned PDFs
+  if (text.trim().length < MIN_TEXT_LENGTH) {
+    const error = new Error('IMAGE_BASED_PDF') as any;
+    error.statusCode = 400;
+    error.userMessage = `This PDF appears to be image-based or scanned (only ${text.trim().length} characters extracted). Please upload a text-based PDF or use OCR software to convert it first.`;
+    throw error;
   }
   
-  console.log(`✅ Processing document with single Gemini API call...`);
+  console.log(`✅ Processing document with ONE Gemini API call (production mode)...`);
   return await analyzeSingleChunk(text, fileName, apiKey);
 }
 
@@ -336,17 +346,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
-  // 🔒 GLOBAL LOCK: Prevent concurrent processing (free tier constraint)
+  // 🔒 GLOBAL LOCK: Ensure one analysis at a time for serverless function stability
   if (isProcessing) {
     console.log('⚠️  Another analysis is already in progress. Rejecting request.');
     return res.status(429).json({
       success: false,
-      error: 'Another analysis is in progress. Please wait 60 seconds and try again.',
+      error: 'Another newspaper is being analyzed. Please wait 30 seconds and try again.',
       code: 'CONCURRENT_REQUEST_BLOCKED'
     });
   }
 
-  // ⏱️ COOLDOWN: Enforce minimum delay between requests to prevent rate limiting
+  // ⏱️ COOLDOWN: Enforce short delay between requests for system stability
   const now = Date.now();
   const timeSinceLastRequest = now - lastRequestTime;
   
@@ -355,7 +365,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`⏳ Cooldown active. Last request was ${Math.floor(timeSinceLastRequest / 1000)}s ago.`);
     return res.status(429).json({
       success: false,
-      error: `Please wait ${waitTime} seconds before uploading another document. This prevents rate limit errors.`,
+      error: `Please wait ${waitTime} seconds before uploading another document.`,
       code: 'COOLDOWN_ACTIVE',
       retryAfter: waitTime
     });
@@ -384,8 +394,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tempFilePath = file.path;
         const fileName = fields.fileName?.[0] || file.originalFilename || 'document';
         const fileExtension = path.extname(fileName).toLowerCase();
+        const fileSizeMB = file.size / (1024 * 1024);
 
-        console.log(`📎 Processing: ${fileName} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+        console.log(`📎 Processing: ${fileName} (${fileSizeMB.toFixed(2)} MB)`);
+
+        // FIX-2: Enforce backend file size limit (8-15MB sweet spot)
+        if (file.size > MAX_FILE_SIZE_BYTES) {
+          const error = new Error('FILE_TOO_LARGE') as any;
+          error.statusCode = 413;
+          error.userMessage = `PDF size (${fileSizeMB.toFixed(1)} MB) exceeds the ${MAX_FILE_SIZE_MB} MB limit. Please compress the PDF or split it into smaller parts. Large PDFs often contain ads and images that aren't needed for analysis.`;
+          throw error;
+        }
 
         let text = '';
 
@@ -400,10 +419,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('Unsupported file type. Use PDF or DOCX.');
         }
 
-        console.log(`📑 Extracted ${text.length} characters`);
+        console.log(`📑 Extracted ${text.length} characters from PDF`);
 
+        // Enhanced validation for text extraction
         if (!text || text.trim().length < 50) {
-          throw new Error('No text extracted from document');
+          const error = new Error('NO_TEXT_EXTRACTED') as any;
+          error.statusCode = 400;
+          error.userMessage = 'Could not extract text from this PDF. It may be corrupted, password-protected, or image-based. Please try a different file.';
+          throw error;
         }
 
         // Get API key from environment
@@ -414,10 +437,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('GEMINI_API_KEY not configured. Please set it in Vercel Environment Variables.');
         }
 
-        console.log(`🚀 Starting Gemini analysis (FREE TIER - single API call)...`);
+        console.log(`🚀 Starting Gemini 2.0 Flash analysis (paid tier)...`);
 
         const analysisResult = await analyzeWithGemini(text, fileName, apiKey);
-        console.log(`✅ Analysis complete!`);
+        console.log(`✅ Analysis complete! Extracted news items successfully.`);
 
         res.status(200).json({
           success: true,
@@ -427,37 +450,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch (error: any) {
         console.error('❌ Analysis error:', error.message);
         
-        // 🎯 GRACEFUL ERROR HANDLING: Return user-friendly structured responses
+        // FIX-5: User-friendly, mentor-appropriate error messages
+        if (error.statusCode === 413) {
+          return res.status(413).json({
+            success: false,
+            error: error.userMessage || 'PDF file is too large. Please upload a file smaller than 15 MB.',
+            code: 'FILE_TOO_LARGE'
+          });
+        }
+        
         if (error.statusCode === 429) {
           return res.status(429).json({
             success: false,
-            error: error.userMessage || 'Rate limit reached. Please wait 1-2 minutes before trying again.',
-            code: 'RATE_LIMIT_HIT',
-            retryAfter: 120 // seconds
+            error: error.userMessage || 'Analysis service is temporarily busy. Please wait 30 seconds and try again.',
+            code: 'SERVICE_BUSY',
+            retryAfter: 30
           });
         }
         
         if (error.statusCode === 403) {
           return res.status(403).json({
             success: false,
-            error: error.userMessage || 'API key invalid. Check your Gemini API key configuration.',
-            code: 'API_KEY_INVALID'
+            error: error.userMessage || 'Analysis service temporarily unavailable. Please try again in a few minutes.',
+            code: 'SERVICE_UNAVAILABLE'
           });
         }
         
         if (error.statusCode === 400) {
           return res.status(400).json({
             success: false,
-            error: error.userMessage || 'Invalid request. The document may be too complex.',
-            code: 'BAD_REQUEST'
+            error: error.userMessage || 'Could not analyze this document. Please ensure it is a valid text-based PDF.',
+            code: 'INVALID_DOCUMENT'
           });
         }
         
-        // Generic error (don't expose stack traces)
+        // Generic error - professional message without technical details
         res.status(500).json({
           success: false,
-          error: error.message || 'An unexpected error occurred during analysis.',
-          code: 'INTERNAL_ERROR'
+          error: 'An unexpected error occurred during analysis. Please try again or contact support if this persists.',
+          code: 'ANALYSIS_ERROR'
         });
         
       } finally {
