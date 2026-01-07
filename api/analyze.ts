@@ -31,8 +31,9 @@ let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 3000; // 3 seconds cooldown for paid tier
 
 // Production limits: Keep files manageable for consistent performance
-const MAX_FILE_SIZE_MB = 15; // 15MB hard limit for PDFs
+const MAX_FILE_SIZE_MB = 5; // 5MB hard limit for accurate analysis
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_PAGES = 10; // Maximum 10 pages for accurate analysis
 const MIN_TEXT_LENGTH = 1000; // Minimum chars to consider PDF text-based (not scanned)
 
 // Call Gemini AI with smart retry logic
@@ -86,14 +87,14 @@ async function callGemini(prompt: string, apiKey: string, retries = 2): Promise<
         if (response.status === 429) {
           const error = new Error('RATE_LIMIT_HIT') as any;
           error.statusCode = 429;
-          error.userMessage = 'Analysis service temporarily busy. Please wait 30 seconds and try again.';
+          error.userMessage = 'The AI analysis service is currently at capacity. This happens during peak usage. Please wait 30-60 seconds and try again. Your file has been validated and is ready to process.';
           throw error;
         }
         
         if (response.status === 403) {
           const error = new Error('API_KEY_INVALID') as any;
           error.statusCode = 403;
-          error.userMessage = 'Analysis service temporarily unavailable. Please contact support if this persists.';
+          error.userMessage = 'The analysis service is temporarily experiencing issues. Please try again in 2-3 minutes. If this continues, please contact your mentor or administrator.';
           throw error;
         }
         
@@ -223,16 +224,34 @@ CRITICAL FILTERING RULES:
    - Include numerical values EXPLICITLY in the points
    - Mark items with meaningful numbers for higher priority
 
-3. ENHANCED REFERENCES:
+3. MINIMUM 5 POINTS PER NEWS ITEM (MANDATORY):
+   - Each news item MUST have AT LEAST 5 bullet points
+   - Points should include diverse content:
+     * Numerical facts (budget allocations, targets, percentages, dates)
+     * Policy implications (impact on governance, sectors, citizens)
+     * Background/context (why this matters, historical significance)
+     * Implementation details (timeline, responsible agencies, mechanisms)
+     * UPSC exam relevance (which syllabus topics, prelims/mains linkage)
+   - If direct facts are limited, infer logical context from the article
+   - DO NOT restrict points to only numerical data - include analysis and context
+
+4. MAXIMUM EXTRACTION - NO CAPS:
+   - Extract ALL exam-relevant news items per category
+   - Do NOT limit yourself to 8-12 items - extract everything useful
+   - Let the mentors and students decide what to use
+   - Only exclude items that are clearly irrelevant to UPSC preparation
+
+5. ENHANCED REFERENCES:
    - Extract: newspaper name, date (DD-MM-YYYY), exact headline, page number, 1-2 line excerpt
    - References must be verifiable and classroom-ready
 
 OUTPUT FORMAT:
 - Return ONLY valid JSON, no markdown
 - Categories: polity, economy, international_relations, science_tech, environment, geography, culture, security, misc
-- Extract 8-12 news items PER CATEGORY if available
+- Extract ALL news items per category (no arbitrary caps)
 - Include items with confidence >= 0.5
 - Empty array [] if no content for category
+- EVERY item must have minimum 5 points
 
 TEXT TO ANALYZE (${truncatedText.length} chars):
 ${truncatedText}
@@ -244,11 +263,17 @@ Return JSON in this EXACT format:
     "polity": [
       {
         "title": "Brief title (max 80 chars)",
-        "points": ["Point with numbers if available: ₹500 crore allocated", "Point 2"],
+        "points": [
+          "Point 1: Numerical fact with context (e.g., ₹500 crore allocated for scheme X covering 10 districts)",
+          "Point 2: Policy implication (e.g., This strengthens rural healthcare infrastructure under National Health Mission)",
+          "Point 3: Background context (e.g., Part of government's push to achieve SDG 3 targets by 2030)",
+          "Point 4: Implementation detail (e.g., State governments to execute through district health committees)",
+          "Point 5: UPSC relevance (e.g., Important for GS Paper 2 - Health governance and Paper 3 - Social sector schemes)"
+        ],
         "references": [
           {
             "newspaper": "The Hindu",
-            "date": "23-12-2025",
+            "date": "07-01-2026",
             "headline": "Exact headline as printed",
             "page": 1,
             "excerpt": "First 100 chars from article..."
@@ -268,7 +293,12 @@ Return JSON in this EXACT format:
   }
 }
 
-Remember: Focus on exam-relevant substance with verifiable data. Filter political noise. Prioritize numerical facts.`;
+Remember: 
+- MINIMUM 5 POINTS per item (mandatory)
+- Extract ALL relevant news (no caps)
+- Focus on exam-relevant substance with verifiable data
+- Filter political noise
+- Prioritize numerical facts but include context and analysis too`;
 
   try {
     const response = await callGemini(prompt, apiKey);
@@ -320,11 +350,24 @@ Remember: Focus on exam-relevant substance with verifiable data. Filter politica
 async function analyzeWithGemini(text: string, fileName: string, apiKey: string) {
   console.log(`📄 Total text length: ${text.length} characters`);
   
-  // FIX-4: Detect image-based/scanned PDFs
-  if (text.trim().length < MIN_TEXT_LENGTH) {
+  // FIX-4: Detect image-based/scanned PDFs with improved thresholds
+  const trimmedText = text.trim();
+  
+  // More sophisticated detection for scanned/image PDFs
+  if (trimmedText.length < MIN_TEXT_LENGTH) {
     const error = new Error('IMAGE_BASED_PDF') as any;
     error.statusCode = 400;
-    error.userMessage = `This PDF appears to be image-based or scanned (only ${text.trim().length} characters extracted). Please upload a text-based PDF or use OCR software to convert it first.`;
+    error.userMessage = `This PDF appears to be scanned or image-based (only ${trimmedText.length} characters extracted). Please upload a text-based PDF for accurate analysis. If you have a scanned PDF, please use OCR software to convert it first.`;
+    throw error;
+  }
+  
+  // Additional check: If text is very short relative to file size, likely image-based
+  // Typical PDFs have ~2000-3000 chars per page for text-based content
+  const expectedMinChars = 1500; // Minimum chars we expect from a valid text-based PDF
+  if (trimmedText.length < expectedMinChars) {
+    const error = new Error('LIKELY_SCANNED_PDF') as any;
+    error.statusCode = 400;
+    error.userMessage = `This PDF appears to be scanned or image-based. Text-based PDFs typically contain more extractable text. Please ensure your PDF is text-based (not just scanned images) for accurate analysis.`;
     throw error;
   }
   
@@ -398,20 +441,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         console.log(`📎 Processing: ${fileName} (${fileSizeMB.toFixed(2)} MB)`);
 
-        // FIX-2: Enforce backend file size limit (8-15MB sweet spot)
+        // Enforce backend file size limit (5MB hard cap)
         if (file.size > MAX_FILE_SIZE_BYTES) {
           const error = new Error('FILE_TOO_LARGE') as any;
           error.statusCode = 413;
-          error.userMessage = `PDF size (${fileSizeMB.toFixed(1)} MB) exceeds the ${MAX_FILE_SIZE_MB} MB limit. Please compress the PDF or split it into smaller parts. Large PDFs often contain ads and images that aren't needed for analysis.`;
+          error.userMessage = `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Your PDF is ${fileSizeMB.toFixed(1)}MB. Please upload a smaller file for accurate analysis.`;
           throw error;
         }
 
         let text = '';
+        let pageCount = 0;
 
         if (fileExtension === '.pdf') {
           const dataBuffer = fs.readFileSync(tempFilePath);
           const pdfData = await pdfParse(dataBuffer);
           text = pdfData.text;
+          pageCount = pdfData.numpages;
+          
+          console.log(`📑 Extracted ${text.length} characters from ${pageCount} pages`);
+          
+          // Enforce page limit (10 pages max)
+          if (pageCount > MAX_PAGES) {
+            const error = new Error('TOO_MANY_PAGES') as any;
+            error.statusCode = 400;
+            error.userMessage = `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Your PDF has ${pageCount} pages. Please upload a smaller file for accurate analysis.`;
+            throw error;
+          }
         } else if (fileExtension === '.docx') {
           const result = await mammoth.extractRawText({ path: tempFilePath });
           text = result.value;
@@ -419,7 +474,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           throw new Error('Unsupported file type. Use PDF or DOCX.');
         }
 
-        console.log(`📑 Extracted ${text.length} characters from PDF`);
+        console.log(`📑 Text extracted successfully (${text.length} characters)`);
 
         // Enhanced validation for text extraction
         if (!text || text.trim().length < 50) {
@@ -454,25 +509,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (error.statusCode === 413) {
           return res.status(413).json({
             success: false,
-            error: error.userMessage || 'PDF file is too large. Please upload a file smaller than 15 MB.',
+            error: error.userMessage || `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Please upload a smaller file for accurate analysis.`,
             code: 'FILE_TOO_LARGE'
+          });
+        }
+        
+        if (error.message === 'TOO_MANY_PAGES' || error.statusCode === 400 && error.userMessage?.includes('pages')) {
+          return res.status(400).json({
+            success: false,
+            error: error.userMessage || `This PDF has too many pages. Maximum allowed is ${MAX_PAGES} pages.`,
+            code: 'TOO_MANY_PAGES'
           });
         }
         
         if (error.statusCode === 429) {
           return res.status(429).json({
             success: false,
-            error: error.userMessage || 'Analysis service is temporarily busy. Please wait 30 seconds and try again.',
+            error: error.userMessage || 'The AI analysis service is currently at capacity. Please wait 30-60 seconds and try again.',
             code: 'SERVICE_BUSY',
-            retryAfter: 30
+            retryAfter: 45,
+            userFriendlyMessage: 'Too many requests right now. Take a short break and try again in about a minute.'
           });
         }
         
         if (error.statusCode === 403) {
           return res.status(403).json({
             success: false,
-            error: error.userMessage || 'Analysis service temporarily unavailable. Please try again in a few minutes.',
-            code: 'SERVICE_UNAVAILABLE'
+            error: error.userMessage || 'The analysis service is temporarily experiencing issues. Please try again in a few minutes.',
+            code: 'SERVICE_UNAVAILABLE',
+            userFriendlyMessage: 'Service temporarily unavailable. Please try again in 2-3 minutes or contact your mentor if this persists.'
           });
         }
         

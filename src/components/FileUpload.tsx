@@ -1,52 +1,58 @@
 import { useState, useRef } from 'react';
 import { Upload, File, AlertCircle, X } from 'lucide-react';
+import pdfParse from 'pdf-parse';
 import type { FileUploadProps } from '../types';
 
-// Production limits: Match backend validation (15MB hard cap)
-const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB hard limit
-const RECOMMENDED_FILE_SIZE = 10 * 1024 * 1024; // 10MB recommended for best performance
+// Production limits: Enforced for accuracy and reliability
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB hard limit
+const MAX_PAGES = 10; // Maximum 10 pages for accurate analysis
 const ALLOWED_TYPES = ['.pdf', '.docx'];
 
 export default function FileUpload({ onFileSelect, isLoading = false, error }: FileUploadProps) {
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const displayError = error || localError;
 
-  const validateFile = (file: File): string | null => {
+  const validateFile = async (file: File): Promise<string | null> => {
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
 
     if (!ALLOWED_TYPES.includes(fileExtension)) {
       return `Invalid file type. Please upload ${ALLOWED_TYPES.join(' or ')} files only.`;
     }
 
+    // Enforce 5MB hard limit
     if (file.size > MAX_FILE_SIZE) {
-      return `File size exceeds ${(MAX_FILE_SIZE / (1024 * 1024))} MB limit. Please compress the PDF or split it into parts (most newspapers fit in 10-15 MB).`;
+      return `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB or ${MAX_PAGES} pages). Please upload a smaller file for accurate analysis.`;
+    }
+
+    // Validate page count for PDFs
+    if (fileExtension === '.pdf') {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdfData = await pdfParse(Buffer.from(arrayBuffer));
+        
+        if (pdfData.numpages > MAX_PAGES) {
+          return `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB or ${MAX_PAGES} pages). Your PDF has ${pdfData.numpages} pages. Please upload a smaller file for accurate analysis.`;
+        }
+      } catch (err) {
+        console.error('Error parsing PDF for page count:', err);
+        // Continue if page count validation fails - backend will catch it
+      }
     }
 
     return null;
   };
 
-  const handleFile = (file: File) => {
+  const handleFile = async (file: File) => {
     setLocalError(null);
-    setWarning(null);
 
-    const validationError = validateFile(file);
+    const validationError = await validateFile(file);
     if (validationError) {
       setLocalError(validationError);
       return;
-    }
-
-    // Show warning for large files (between 10-15 MB)
-    if (file.size > RECOMMENDED_FILE_SIZE) {
-      const sizeInMB = (file.size / (1024 * 1024)).toFixed(1);
-      setWarning(
-        `⚠️ Large file (${sizeInMB} MB). Processing may take 2-3 minutes. ` +
-        `For faster results, keep files under 10 MB (approximately 100 pages).`
-      );
     }
 
     setSelectedFile(file);
@@ -87,7 +93,6 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
   const clearFile = () => {
     setSelectedFile(null);
     setLocalError(null);
-    setWarning(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -130,7 +135,7 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
                   or click to browse from your device
                 </p>
                 <p className="text-sm text-gray-500">
-                  Supports PDF and DOCX files up to 15MB (recommended: 10MB or ~100 pages)
+                  Supports PDF and DOCX files up to 5MB or 10 pages
                 </p>
               </div>
 
@@ -177,14 +182,6 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
           )}
         </div>
       </div>
-
-      {/* Warning for large files (yellow) */}
-      {warning && !displayError && (
-        <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start space-x-3">
-          <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-yellow-800">{warning}</p>
-        </div>
-      )}
 
       {/* Error messages (red) */}
       {displayError && (

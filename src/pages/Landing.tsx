@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Sparkles, Brain, FileCheck, ArrowRight, Clock } from 'lucide-react';
 import FileUpload from '../components/FileUpload';
+import ProgressBar from '../components/ProgressBar';
 import { useAnalysisStore } from '../store/analysisStore';
 import type { UploadedFile } from '../types';
 
@@ -13,6 +14,7 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
+  const [progressStage, setProgressStage] = useState<'upload' | 'extraction' | 'analysis' | 'formatting' | null>(null);
 
   const { setAnalysis, setLoading: setStoreLoading, setError: setStoreError } = useAnalysisStore();
 
@@ -49,11 +51,23 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
       console.log('Starting analysis for file:', uploadedFile.name);
       console.log('File size:', (uploadedFile.size / (1024 * 1024)).toFixed(2), 'MB');
 
+      // Stage 1: Upload & Validation (0-20%)
+      setProgressStage('upload');
+      
       const formData = new FormData();
       formData.append('file', uploadedFile.file);
       formData.append('fileName', uploadedFile.name);
 
       console.log('Calling local API:', '/api/analyze');
+
+      // Stage 2: Text Extraction (20-40%)
+      setProgressStage('extraction');
+      
+      // Small delay to show extraction stage
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Stage 3: AI Analysis (40-80%)
+      setProgressStage('analysis');
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -75,12 +89,18 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
         throw new Error(errorData?.error || `Analysis failed (${response.status})`);
       }
 
+      // Stage 4: Formatting Results (80-100%)
+      setProgressStage('formatting');
+      
       const result = await response.json();
       console.log('Analysis result:', result);
 
       if (result.success && result.data) {
         setAnalysis(result.data, JSON.stringify(result.data, null, 2));
         console.log('Analysis stored successfully');
+        
+        // Complete progress
+        await new Promise(resolve => setTimeout(resolve, 500));
         
         // Start 5-second cooldown for next upload
         setCooldownSeconds(5);
@@ -97,6 +117,7 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
     } finally {
       setIsLoading(false);
       setStoreLoading(false);
+      setProgressStage(null);
     }
   };
 
@@ -121,6 +142,9 @@ export default function Landing({ onNavigateToAnalysis }: LandingProps) {
               isLoading={isLoading}
               error={error}
             />
+
+            {/* Progress Bar */}
+            {isLoading && <ProgressBar stage={progressStage} />}
 
             {uploadedFile && !isLoading && !error && (
               <div className="mt-8 flex flex-col items-center space-y-4">
