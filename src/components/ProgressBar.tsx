@@ -1,98 +1,116 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 
 interface ProgressBarProps {
   stage: 'upload' | 'extraction' | 'analysis' | 'formatting' | null;
 }
 
-// Stage configurations with realistic timing
-const STAGE_CONFIG = {
-  upload: { progress: 10, message: 'Uploading and validating file', duration: 1000 },
-  extraction: { progress: 30, message: 'Extracting text from PDF', duration: 3000 },
-  analysis: { progress: 70, message: 'Analyzing content with AI', duration: 25000 },
-  formatting: { progress: 95, message: 'Generating insights and formatting results', duration: 3000 }
-};
+// ⏱️ TIME-BASED SIMULATED PROGRESS
+// Backend doesn't stream progress, so we simulate smooth continuous movement
+// This creates a better UX than freezing at arbitrary percentages
+const ESTIMATED_TOTAL_DURATION = 75000; // 75 seconds estimated total (conservative)
 
 export default function ProgressBar({ stage }: ProgressBarProps) {
   const [progress, setProgress] = useState(0);
-  const [displayMessage, setDisplayMessage] = useState('Starting analysis...');
-  const [estimatedTime, setEstimatedTime] = useState('');
+  const [remainingSeconds, setRemainingSeconds] = useState(75);
+  const startTimeRef = useRef<number>(Date.now());
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!stage) {
       setProgress(0);
+      setRemainingSeconds(75);
       return;
     }
 
-    const config = STAGE_CONFIG[stage];
-    const targetProgress = config.progress;
-    const message = config.message;
-    
-    setDisplayMessage(message);
-    
-    // Calculate estimated remaining time
-    let totalRemaining = 0;
-    const currentStageIndex = Object.keys(STAGE_CONFIG).indexOf(stage);
-    
-    Object.values(STAGE_CONFIG).forEach((value, index) => {
-      if (index >= currentStageIndex) {
-        totalRemaining += value.duration;
-      }
-    });
-    
-    const minutes = Math.floor(totalRemaining / 60000);
-    const seconds = Math.ceil((totalRemaining % 60000) / 1000);
-    
-    if (minutes > 0) {
-      setEstimatedTime(`≈ ${minutes}m ${seconds}s remaining`);
-    } else {
-      setEstimatedTime(`≈ ${seconds}s remaining`);
+    // Reset timer when processing starts
+    if (stage === 'upload') {
+      startTimeRef.current = Date.now();
     }
 
-    // Smoothly animate progress to target
-    const startProgress = progress;
-    const progressDiff = targetProgress - startProgress;
-    const steps = 20; // Number of animation steps
-    const stepDuration = 150; // ms per step
-    
-    let currentStep = 0;
-    const interval = setInterval(() => {
-      currentStep++;
-      const newProgress = startProgress + (progressDiff * (currentStep / steps));
-      setProgress(Math.min(newProgress, targetProgress));
+    // ✅ CONTINUOUS PROGRESS ANIMATION
+    // Progress moves smoothly from 0% → 95%, never freezing
+    // Only completes (100%) when backend responds successfully
+    intervalRef.current = setInterval(() => {
+      const elapsedMs = Date.now() - startTimeRef.current;
+      const elapsedSeconds = Math.floor(elapsedMs / 1000);
       
-      if (currentStep >= steps) {
-        clearInterval(interval);
+      // Calculate progress percentage (0% → 95%)
+      // Fast progress early, slower as it approaches 95%
+      let calculatedProgress: number;
+      
+      if (elapsedMs < 30000) {
+        // 0-30s: 0% → 60% (fast initial progress)
+        calculatedProgress = (elapsedMs / 30000) * 60;
+      } else if (elapsedMs < 50000) {
+        // 30-50s: 60% → 80% (moderate progress)
+        calculatedProgress = 60 + ((elapsedMs - 30000) / 20000) * 20;
+      } else {
+        // 50s+: 80% → 95% (slow approach, never reaches 95% until almost done)
+        const remaining = Math.min((elapsedMs - 50000) / 25000, 1);
+        calculatedProgress = 80 + (remaining * 15);
       }
-    }, stepDuration);
+      
+      // ⚠️ NEVER exceed 95% while waiting for backend
+      const cappedProgress = Math.min(calculatedProgress, 95);
+      setProgress(cappedProgress);
+      
+      // Calculate remaining time (countdown)
+      const remainingMs = Math.max(0, ESTIMATED_TOTAL_DURATION - elapsedMs);
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      setRemainingSeconds(remainingSec);
+      
+    }, 100); // Update every 100ms for smooth animation
 
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
   }, [stage]);
 
-  // Complete the progress bar when done
+  // ✅ COMPLETION LOGIC
+  // When formatting stage is reached, we're close to done
+  // Complete to 100% quickly
   useEffect(() => {
-    if (progress >= 95 && progress < 100) {
+    if (stage === 'formatting') {
       const timer = setTimeout(() => {
         setProgress(100);
-        setDisplayMessage('Analysis complete!');
-        setEstimatedTime('');
-      }, 1000);
+        setRemainingSeconds(0);
+      }, 500);
       return () => clearTimeout(timer);
     }
-  }, [progress]);
+  }, [stage]);
 
   if (!stage) return null;
+
+  // User-friendly messages based on stage
+  const getMessage = () => {
+    switch (stage) {
+      case 'upload':
+        return 'Uploading and validating file';
+      case 'extraction':
+        return 'Extracting text from PDF';
+      case 'analysis':
+        return 'Analyzing content with AI';
+      case 'formatting':
+        return 'Generating insights and formatting results';
+      default:
+        return 'Processing…';
+    }
+  };
 
   return (
     <div className="w-full max-w-2xl mx-auto mt-6 space-y-3">
       <div className="flex items-center justify-between text-sm">
         <div className="flex items-center space-x-2">
           <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
-          <span className="font-medium text-gray-700">{displayMessage}</span>
+          <span className="font-medium text-gray-700">{getMessage()}</span>
         </div>
-        {estimatedTime && (
-          <span className="text-gray-500 text-xs">{estimatedTime}</span>
+        {remainingSeconds > 0 && progress < 100 && (
+          <span className="text-gray-500 text-xs">
+            ≈ {remainingSeconds}s remaining
+          </span>
         )}
       </div>
       
