@@ -30,10 +30,11 @@ let lastRequestTime = 0;
 // Paid tier supports higher rates, but we enforce cooldown for reliability
 const MIN_REQUEST_INTERVAL = 3000; // 3 seconds cooldown for paid tier
 
-// Production limits: Keep files manageable for consistent performance
-const MAX_FILE_SIZE_MB = 5; // 5MB hard limit for accurate analysis
+// ⚠️ STRICT PRODUCTION LIMITS - Enforced for reliability and stability
+// Hard limits to prevent Gemini API failures, timeouts, and rate limiting
+const MAX_FILE_SIZE_MB = 10; // 10MB hard limit - no exceptions
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const MAX_PAGES = 10; // Maximum 10 pages for accurate analysis
+const MAX_PAGES = 12; // Maximum 12 pages - strictly enforced
 const MIN_TEXT_LENGTH = 1000; // Minimum chars to consider PDF text-based (not scanned)
 
 // Call Gemini AI with smart retry logic
@@ -441,11 +442,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         console.log(`📎 Processing: ${fileName} (${fileSizeMB.toFixed(2)} MB)`);
 
-        // Enforce backend file size limit (5MB hard cap)
+        // ⚠️ STRICT FILE SIZE ENFORCEMENT - Reject immediately if too large
         if (file.size > MAX_FILE_SIZE_BYTES) {
           const error = new Error('FILE_TOO_LARGE') as any;
-          error.statusCode = 413;
-          error.userMessage = `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Your PDF is ${fileSizeMB.toFixed(1)}MB. Please upload a smaller file for accurate analysis.`;
+          error.statusCode = 400;
+          error.userMessage = `File too large. Please upload newspapers up to ${MAX_FILE_SIZE_MB} MB. Your file is ${fileSizeMB.toFixed(1)} MB.`;
           throw error;
         }
 
@@ -460,11 +461,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           
           console.log(`📑 Extracted ${text.length} characters from ${pageCount} pages`);
           
-          // Enforce page limit (10 pages max)
+          // ⚠️ STRICT PAGE LIMIT ENFORCEMENT - Hard fail if exceeded
+          // Do NOT attempt chunking or partial processing
           if (pageCount > MAX_PAGES) {
             const error = new Error('TOO_MANY_PAGES') as any;
             error.statusCode = 400;
-            error.userMessage = `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Your PDF has ${pageCount} pages. Please upload a smaller file for accurate analysis.`;
+            error.userMessage = `This newspaper has ${pageCount} pages. Maximum allowed is ${MAX_PAGES} pages. Please upload the first ${MAX_PAGES} pages for best results.`;
             throw error;
           }
         } else if (fileExtension === '.docx') {
@@ -506,18 +508,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error('❌ Analysis error:', error.message);
         
         // FIX-5: User-friendly, mentor-appropriate error messages
-        if (error.statusCode === 413) {
-          return res.status(413).json({
+        // Handle file size errors
+        if (error.statusCode === 400 && error.message === 'FILE_TOO_LARGE') {
+          return res.status(400).json({
             success: false,
-            error: error.userMessage || `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE_MB}MB or ${MAX_PAGES} pages). Please upload a smaller file for accurate analysis.`,
+            error: error.userMessage || `File too large. Please upload newspapers up to ${MAX_FILE_SIZE_MB} MB.`,
             code: 'FILE_TOO_LARGE'
           });
         }
         
-        if (error.message === 'TOO_MANY_PAGES' || error.statusCode === 400 && error.userMessage?.includes('pages')) {
+        // Handle page limit errors
+        if (error.message === 'TOO_MANY_PAGES' || (error.statusCode === 400 && error.userMessage?.includes('pages'))) {
           return res.status(400).json({
             success: false,
-            error: error.userMessage || `This PDF has too many pages. Maximum allowed is ${MAX_PAGES} pages.`,
+            error: error.userMessage || `This newspaper has too many pages. Maximum allowed is ${MAX_PAGES} pages.`,
             code: 'TOO_MANY_PAGES'
           });
         }

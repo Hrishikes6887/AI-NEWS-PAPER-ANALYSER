@@ -3,9 +3,9 @@ import { Upload, File, AlertCircle, X } from 'lucide-react';
 import pdfParse from 'pdf-parse';
 import type { FileUploadProps } from '../types';
 
-// Production limits: Enforced for accuracy and reliability
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB hard limit
-const MAX_PAGES = 10; // Maximum 10 pages for accurate analysis
+// ⚠️ STRICT PRODUCTION LIMITS - Hard enforced for stability
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB hard limit - no exceptions
+const MAX_PAGES = 12; // Maximum 12 pages - strictly enforced
 const ALLOWED_TYPES = ['.pdf', '.docx'];
 
 export default function FileUpload({ onFileSelect, isLoading = false, error }: FileUploadProps) {
@@ -23,9 +23,9 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
       return `Invalid file type. Please upload ${ALLOWED_TYPES.join(' or ')} files only.`;
     }
 
-    // Enforce 5MB hard limit
+    // ⚠️ STRICT FILE SIZE CHECK - Block immediately if too large
     if (file.size > MAX_FILE_SIZE) {
-      return `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB or ${MAX_PAGES} pages). Please upload a smaller file for accurate analysis.`;
+      return `File too large. Please upload newspapers up to ${MAX_FILE_SIZE / (1024 * 1024)} MB. Your file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`;
     }
 
     // Validate page count for PDFs
@@ -34,8 +34,9 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
         const arrayBuffer = await file.arrayBuffer();
         const pdfData = await pdfParse(Buffer.from(arrayBuffer));
         
+        // ⚠️ STRICT PAGE LIMIT CHECK - Block if exceeded
         if (pdfData.numpages > MAX_PAGES) {
-          return `This PDF exceeds the allowed limit (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB or ${MAX_PAGES} pages). Your PDF has ${pdfData.numpages} pages. Please upload a smaller file for accurate analysis.`;
+          return `This newspaper has ${pdfData.numpages} pages. Maximum allowed is ${MAX_PAGES} pages. Please upload the first ${MAX_PAGES} pages for best results.`;
         }
       } catch (err) {
         console.error('Error parsing PDF for page count:', err);
@@ -135,7 +136,10 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
                   or click to browse from your device
                 </p>
                 <p className="text-sm text-gray-500">
-                  Supports PDF and DOCX files up to 5MB or 10 pages
+                  Supports PDF and DOCX files up to 10MB or 12 pages
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  ⚠️ Files exceeding these limits will be rejected
                 </p>
               </div>
 
