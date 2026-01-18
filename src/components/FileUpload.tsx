@@ -138,9 +138,6 @@ export default function FileUpload({ onFileSelect, isLoading = false, error }: F
                 <p className="text-sm text-gray-500">
                   Supports PDF and DOCX files up to 10MB or 12 pages
                 </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  ⚠️ Files exceeding these limits will be rejected
-                </p>
               </div>
 
               <button
